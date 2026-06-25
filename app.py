@@ -1,18 +1,26 @@
 """
 Gradio front-end for the MarTech Vendor Evaluation Agent.
 
-Portfolio-style layout: centered title, one outer card containing three input cards,
-a primary Run Agent button, and a primary Download Excel button.
+Behavior:
+- Prominent centered title.
+- Simple three-input layout: vendor name, context, uploaded reports.
+- No spinner text, no emojis.
+- Shows only processing time while the agent runs.
+- Disables Run Agent while running and styles it lighter blue.
+- Shows run metrics only after completion.
+- Shows Download Excel only after the Excel file is ready.
 
-Run: python app.py (needs ANTHROPIC_API_KEY and OPENAI_API_KEY in the env)
+Run: python app.py
 """
 
 from __future__ import annotations
 
+import inspect
 import os
 import tempfile
 import threading
 import time
+from typing import Any
 
 import gradio as gr
 
@@ -32,22 +40,131 @@ TEMPLATE = os.getenv(
 # --------------------------------------------------------------------------- #
 
 def _processing_md(elapsed: float) -> str:
-    return f"⏳ **Processing… {elapsed:0.0f}s**"
+    return f"**Processing time:** {elapsed:0.0f}s"
 
 
-def _metrics_md(state: dict, xlsx: str | None) -> str:
-    m = state["metrics"]
-    if xlsx:
-        return f"✅ **Done in {m.total_seconds}s. Excel scorecard is ready.**"
-    return f"⚠️ **Done in {m.total_seconds}s, but the Excel file could not be generated.**"
+def _get_value(obj: Any, name: str, default: Any = None) -> Any:
+    """Read a field from either a dataclass-like object or a dict."""
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(name, default)
+    return getattr(obj, name, default)
 
 
-def _disabled_download(label: str = "Download Excel"):
-    return gr.update(value=None, label=label, interactive=False)
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value or 0)
+    except Exception:
+        return default
 
 
-def _enabled_download(path: str):
-    return gr.update(value=path, label="Download Excel", interactive=True)
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value or 0.0)
+    except Exception:
+        return default
+
+
+def _format_seconds(value: Any) -> str:
+    return f"{_safe_float(value):0.2f}s"
+
+
+def _format_int(value: Any) -> str:
+    return f"{_safe_int(value):,}"
+
+
+def _format_pct(value: Any) -> str:
+    try:
+        return f"{float(value) * 100:0.0f}%"
+    except Exception:
+        return "N/A"
+
+
+def _metrics_md(state: dict, xlsx: str | None, elapsed: float) -> str:
+    metrics = state.get("metrics") or {}
+
+    total_seconds = _get_value(metrics, "total_seconds", elapsed) or elapsed
+    input_tokens = _safe_int(_get_value(metrics, "input_tokens", 0))
+    output_tokens = _safe_int(_get_value(metrics, "output_tokens", 0))
+    total_tokens = input_tokens + output_tokens
+    llm_calls = _safe_int(_get_value(metrics, "llm_calls", 0))
+    web_searches = _safe_int(_get_value(metrics, "web_search_requests", 0))
+    node_seconds = _get_value(metrics, "node_seconds", {}) or {}
+
+    rows = [
+        ("Time taken", _format_seconds(total_seconds)),
+        ("Tokens consumed", _format_int(total_tokens)),
+        ("Input tokens", _format_int(input_tokens)),
+        ("Output tokens", _format_int(output_tokens)),
+        ("LLM calls", _format_int(llm_calls)),
+        ("Web searches", _format_int(web_searches)),
+        ("Excel status", "Ready" if xlsx else "Not generated"),
+    ]
+
+    consistency = state.get("consistency")
+    if consistency is not None:
+        rows.extend(
+            [
+                (
+                    "Judge agreement within 1 point",
+                    _format_pct(_get_value(consistency, "agreement_within_1", None)),
+                ),
+                (
+                    "Mean judge difference",
+                    str(_get_value(consistency, "mean_abs_diff", "N/A")),
+                ),
+                (
+                    "Material judge findings",
+                    _format_int(_get_value(consistency, "material_issues_count", 0)),
+                ),
+            ]
+        )
+
+    lines = ["### Run metrics", "", "| Metric | Value |", "|---|---:|"]
+    lines.extend(f"| {label} | {value} |" for label, value in rows)
+
+    if isinstance(node_seconds, dict) and node_seconds:
+        lines.extend(["", "### Step timing", "", "| Step | Time |", "|---|---:|"])
+        for node, seconds in node_seconds.items():
+            lines.append(f"| {node} | {_format_seconds(seconds)} |")
+
+    errors = state.get("errors") or []
+    if errors:
+        lines.extend(["", "### Warnings", ""])
+        for err in errors[:8]:
+            lines.append(f"- {err}")
+
+    return "\n".join(lines)
+
+
+def _hide_metrics():
+    return gr.update(value="", visible=False)
+
+
+def _show_metrics(markdown: str):
+    return gr.update(value=markdown, visible=True)
+
+
+def _hide_download():
+    return gr.update(value=None, visible=False, interactive=False)
+
+
+def _show_download(path: str):
+    return gr.update(
+        value=path,
+        label="Download Excel",
+        visible=True,
+        interactive=True,
+    )
+
+
+def _disable_run_button():
+    return gr.update(value="Run Agent", interactive=False)
+
+
+def _enable_run_button():
+    return gr.update(value="Run Agent", interactive=True)
 
 
 def _export(state: dict, vendor: str) -> str | None:
@@ -55,18 +172,33 @@ def _export(state: dict, vendor: str) -> str | None:
         state.setdefault("errors", []).append("[xlsx] scorecard template not found")
         return None
 
-    safe_vendor = vendor.strip().replace(" ", "_").replace("/", "-")
+    safe_vendor = (
+        vendor.strip()
+        .replace(" ", "_")
+        .replace("/", "-")
+        .replace("\\", "-")
+        or "vendor"
+    )
     out = os.path.join(tempfile.mkdtemp(), f"{safe_vendor}_scorecard.xlsx")
 
     try:
-        return populate_template(TEMPLATE, out, state)
+        generated = populate_template(TEMPLATE, out, state)
     except Exception as exc:
         state.setdefault("errors", []).append(f"[xlsx] {exc}")
         return None
 
+    if generated and os.path.exists(generated):
+        return generated
+
+    if os.path.exists(out):
+        return out
+
+    state.setdefault("errors", []).append("[xlsx] scorecard export did not return a file path")
+    return None
+
 
 # --------------------------------------------------------------------------- #
-# Handler — generator so the timer ticks live while the run executes
+# Handler — generator so processing time updates while the run executes
 # --------------------------------------------------------------------------- #
 
 def evaluate_vendor(vendor: str, context: str, files):
@@ -80,207 +212,201 @@ def evaluate_vendor(vendor: str, context: str, files):
             if path:
                 paths.append(path)
 
-    holder: dict = {}
+    holder: dict[str, Any] = {}
 
-    def worker():
+    def worker() -> None:
         try:
             docs = extract_text(paths)
+            kwargs = {"documents": docs}
+
+            # Supports both the older graph signature with gates_cfg and the newer
+            # no-gates signature without breaking either version.
+            if "gates_cfg" in inspect.signature(run_evaluation).parameters:
+                kwargs["gates_cfg"] = []
+
             holder["state"] = run_evaluation(
                 vendor.strip(),
                 (context or "").strip(),
-                gates_cfg=[],  # gates not exposed in this layout
-                documents=docs,
+                **kwargs,
             )
-        except Exception as exc:  # surface to the UI
+        except Exception as exc:
             holder["error"] = exc
 
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
+    thread = threading.Thread(target=worker, daemon=True)
     start = time.time()
+    thread.start()
 
-    while t.is_alive():
-        yield _processing_md(time.time() - start), _disabled_download("Preparing Excel…")
+    yield (
+        _processing_md(0),
+        _hide_metrics(),
+        _hide_download(),
+        _disable_run_button(),
+    )
+
+    while thread.is_alive():
+        elapsed = time.time() - start
+        yield (
+            _processing_md(elapsed),
+            _hide_metrics(),
+            _hide_download(),
+            _disable_run_button(),
+        )
         time.sleep(1)
 
-    t.join()
+    thread.join()
+    elapsed = time.time() - start
 
     if "error" in holder:
-        raise gr.Error(f"Run failed: {holder['error']}")
+        yield (
+            f"**Processing time:** {elapsed:0.0f}s\n\nRun failed: {holder['error']}",
+            _hide_metrics(),
+            _hide_download(),
+            _enable_run_button(),
+        )
+        return
 
-    state = holder["state"]
+    state = holder.get("state")
+    if not state:
+        yield (
+            f"**Processing time:** {elapsed:0.0f}s\n\nRun failed: no result returned by the agent.",
+            _hide_metrics(),
+            _hide_download(),
+            _enable_run_button(),
+        )
+        return
+
     xlsx = _export(state, vendor)
+    metrics = _metrics_md(state, xlsx, elapsed)
 
-    if xlsx:
-        yield _metrics_md(state, xlsx), _enabled_download(xlsx)
-    else:
-        yield _metrics_md(state, xlsx), _disabled_download("Excel unavailable")
+    yield (
+        _processing_md(elapsed),
+        _show_metrics(metrics),
+        _show_download(xlsx) if xlsx else _hide_download(),
+        _enable_run_button(),
+    )
 
 
 # --------------------------------------------------------------------------- #
-# Theme + CSS to match saurav-tripathy.com
+# Minimal CSS: mostly default Gradio with prominent title and visible metrics
 # --------------------------------------------------------------------------- #
-
-THEME = gr.themes.Base(
-    primary_hue=gr.themes.colors.blue,
-    neutral_hue=gr.themes.colors.slate,
-    font=[gr.themes.GoogleFont("Inter"), "ui-sans-serif", "system-ui", "sans-serif"],
-).set(
-    body_background_fill="#f8fbff",
-    body_text_color="#06142f",
-    button_primary_background_fill="#1d4ed8",
-    button_primary_background_fill_hover="#1e40af",
-    button_primary_text_color="#ffffff",
-    block_background_fill="#ffffff",
-    block_border_color="#dbeafe",
-    block_label_text_color="#475569",
-    block_title_text_color="#06142f",
-)
 
 CSS = """
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Manrope:wght@400..800&display=swap');
-
-:root {
-  --portfolio-bg: #f8fbff;
-  --portfolio-text: #06142f;
-  --portfolio-muted: #475569;
-  --portfolio-blue: #1d4ed8;
-  --portfolio-blue-dark: #1e40af;
-  --portfolio-border: #dbeafe;
-  --portfolio-card: #ffffff;
+#main-title {
+  text-align: center !important;
+  margin: 12px auto 30px !important;
 }
 
-.gradio-container {
-  background: var(--portfolio-bg) !important;
-  color: var(--portfolio-text) !important;
-  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif !important;
+#main-title h1 {
+  color: #06142f !important;
+  font-size: clamp(2.8rem, 6vw, 5.2rem) !important;
+  line-height: 1.02 !important;
+  letter-spacing: -0.05em !important;
+  font-weight: 900 !important;
+  margin: 0 !important;
 }
 
-main {
-  max-width: 1120px !important;
-  margin: 0 auto !important;
-  padding: 52px 20px 72px !important;
-}
-
-.mt-hero {
-  text-align: center;
-  margin: 0 auto 30px;
-}
-
-.mt-title {
-  font-family: 'Manrope', 'Inter', ui-sans-serif, system-ui, sans-serif !important;
-  font-size: clamp(2.1rem, 5vw, 4.1rem);
-  line-height: 1.02;
-  letter-spacing: -0.055em;
-  color: var(--portfolio-text);
-  margin: 0;
-}
-
-.mt-shell {
-  max-width: 1040px;
-  margin: 0 auto;
-  padding: 18px;
-  border: 1px solid var(--portfolio-border);
-  border-radius: 30px;
-  background: rgba(255, 255, 255, 0.88);
-  box-shadow: 0 24px 70px rgba(6, 20, 47, 0.09);
+.mt-shell,
+.mt-card {
+  border: 0 !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  background: transparent !important;
 }
 
 .mt-input-row {
-  gap: 16px !important;
-}
-
-.mt-card {
-  min-height: 214px;
-  padding: 18px !important;
-  border: 1px solid #e2e8f0;
-  border-radius: 24px;
-  background: var(--portfolio-card);
-  box-shadow: 0 12px 34px rgba(6, 20, 47, 0.045);
-}
-
-.mt-card label,
-.mt-card .block-title,
-.mt-card .wrap > label {
-  color: var(--portfolio-text) !important;
-  font-weight: 700 !important;
-}
-
-.mt-card textarea,
-.mt-card input,
-.mt-card .file-preview,
-.mt-card .upload-container {
-  border-radius: 16px !important;
+  gap: 12px !important;
 }
 
 .mt-actions {
-  max-width: 1040px;
-  margin: 18px auto 0;
+  margin-top: 18px !important;
 }
 
 #run-agent-btn,
-#download-excel-btn {
+#run-agent-btn button {
   width: 100% !important;
-  border-radius: 18px !important;
-  background: var(--portfolio-blue) !important;
-  border: 1px solid var(--portfolio-blue) !important;
+  min-height: 54px !important;
+  border-radius: 12px !important;
+  background: #2563eb !important;
+  border-color: #2563eb !important;
   color: #ffffff !important;
   font-weight: 800 !important;
-  min-height: 56px !important;
-  box-shadow: 0 14px 30px rgba(29, 78, 216, 0.22) !important;
 }
 
 #run-agent-btn:hover,
-#download-excel-btn:hover {
-  background: var(--portfolio-blue-dark) !important;
-  border-color: var(--portfolio-blue-dark) !important;
+#run-agent-btn button:hover {
+  background: #1d4ed8 !important;
+  border-color: #1d4ed8 !important;
 }
 
-#download-excel-btn:disabled,
-#download-excel-btn[disabled] {
-  background: var(--portfolio-blue) !important;
-  border-color: var(--portfolio-blue) !important;
+#run-agent-btn:disabled,
+#run-agent-btn[disabled],
+#run-agent-btn button:disabled,
+#run-agent-btn button[disabled] {
+  background: #93c5fd !important;
+  border-color: #93c5fd !important;
   color: #ffffff !important;
-  opacity: 0.58 !important;
+  opacity: 1 !important;
+  cursor: not-allowed !important;
 }
 
 .mt-status {
-  min-height: 28px;
-  margin: 10px 0 22px;
-  text-align: center;
-  color: var(--portfolio-muted);
+  margin: 12px 0 10px !important;
+  min-height: 26px !important;
+  text-align: center !important;
 }
 
 .mt-status p {
   margin: 0 !important;
 }
 
-.mt-download-gap {
-  height: 10px;
+.mt-metrics {
+  margin-top: 10px !important;
+  background: #050b18 !important;
+  color: #f8fafc !important;
+  border: 0 !important;
+  border-radius: 12px !important;
+  padding: 14px 16px !important;
 }
 
-@media (max-width: 820px) {
-  main {
-    padding-top: 34px !important;
-  }
+.mt-metrics * {
+  color: #f8fafc !important;
+}
 
-  .mt-shell {
-    padding: 14px;
-    border-radius: 24px;
-  }
+.mt-metrics table {
+  width: 100% !important;
+}
 
-  .mt-card {
-    min-height: auto;
-  }
+.mt-metrics th,
+.mt-metrics td {
+  border-color: rgba(248, 250, 252, 0.25) !important;
+}
+
+#download-excel-btn,
+#download-excel-btn button {
+  width: 100% !important;
+  min-height: 54px !important;
+  margin-top: 14px !important;
+  border-radius: 12px !important;
+  background: #16a34a !important;
+  border-color: #16a34a !important;
+  color: #ffffff !important;
+  font-weight: 800 !important;
+}
+
+#download-excel-btn:hover,
+#download-excel-btn button:hover {
+  background: #15803d !important;
+  border-color: #15803d !important;
 }
 """
 
 
 def build_ui():
-    with gr.Blocks(title="MarTech Vendor Evaluation Agent", theme=THEME, css=CSS) as demo:
+    with gr.Blocks(title="MarTech Vendor Evaluation Agent", css=CSS) as demo:
         gr.HTML(
-            "<section class='mt-hero'>"
-            "<h1 class='mt-title'>MarTech Vendor Evaluation Agent</h1>"
-            "</section>"
+            "<div id='main-title'>"
+            "<h1>MarTech Vendor Evaluation Agent</h1>"
+            "</div>"
         )
 
         with gr.Group(elem_classes="mt-shell"):
@@ -313,19 +439,20 @@ def build_ui():
         with gr.Column(elem_classes="mt-actions"):
             run_btn = gr.Button("Run Agent", variant="primary", elem_id="run-agent-btn")
             status_md = gr.Markdown("", elem_classes="mt-status")
-            gr.HTML("<div class='mt-download-gap'></div>")
+            metrics_md = gr.Markdown("", elem_classes="mt-metrics", visible=False)
             download_btn = gr.DownloadButton(
                 "Download Excel",
                 value=None,
-                variant="primary",
                 elem_id="download-excel-btn",
+                visible=False,
                 interactive=False,
             )
 
         run_btn.click(
             evaluate_vendor,
             inputs=[vendor, context, files],
-            outputs=[status_md, download_btn],
+            outputs=[status_md, metrics_md, download_btn, run_btn],
+            show_progress="hidden",
         )
 
     return demo
