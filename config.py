@@ -11,12 +11,16 @@ import os
 from dataclasses import dataclass, field
 
 # --------------------------------------------------------------------------- #
-# Models. These are placeholders — set the env vars to model IDs available on
-# your account. The PRIMARY model must support the server-side web_search tool.
-# See https://docs.claude.com for current model IDs and tool support.
+# Models — cross-provider.
+#   PRIMARY (evaluation) = Anthropic. MUST support the server-side web_search
+#     tool. Needs ANTHROPIC_API_KEY in the env.
+#   JUDGE (consistency)  = OpenAI. A different provider on purpose, so Node 3
+#     measures genuine cross-provider disagreement. Needs OPENAI_API_KEY.
+# These are placeholders — set the env vars to model IDs available on your
+# accounts. See https://docs.claude.com and https://platform.openai.com/docs/models
 # --------------------------------------------------------------------------- #
-PRIMARY_MODEL = os.getenv("MARTECH_PRIMARY_MODEL", "claude-sonnet-4-5")
-JUDGE_MODEL = os.getenv("MARTECH_JUDGE_MODEL", "claude-3-5-haiku-latest")
+PRIMARY_MODEL = os.getenv("MARTECH_PRIMARY_MODEL", "claude-sonnet-4-5")   # Anthropic
+JUDGE_MODEL = os.getenv("MARTECH_JUDGE_MODEL", "gpt-4o-mini")             # OpenAI
 
 # Sampling. Scoring is held at low temperature for reproducibility; the judge
 # pass is deliberately a *different model* at low temp (the "another model"

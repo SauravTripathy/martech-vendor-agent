@@ -1,13 +1,15 @@
 """
-Anthropic API layer.
+Model API layer — cross-provider.
 
-Three call types:
-  * gather_evidence_for_category  -> server-side web_search, returns Evidence[]
-  * score_all                     -> reasons over gathered evidence, returns scores+gates
-  * judge_rescore                 -> a DIFFERENT model re-scores the SAME evidence
+  * gather_evidence_for_category  -> Anthropic + server-side web_search -> Evidence[]
+  * score_all                     -> Anthropic reasons over evidence -> scores+gates
+  * judge_rescore                 -> OPENAI re-scores the SAME evidence (cross-provider
+                                     consistency: a different vendor's model, so a
+                                     disagreement is signal, not shared blind spots)
 
-All calls force JSON-only output and parse defensively. Token/search usage is
-returned alongside each payload so the caller can accumulate RunMetrics.
+All calls force JSON-only output and parse defensively. Usage dicts are tagged
+with "provider" so RunMetrics can break tokens down per provider (they price
+differently).
 """
 from __future__ import annotations
 
@@ -19,9 +21,15 @@ import config
 
 try:
     from anthropic import Anthropic
-    _client = Anthropic()  # reads ANTHROPIC_API_KEY from env
+    _anthropic = Anthropic()  # reads ANTHROPIC_API_KEY from env
 except Exception:  # pragma: no cover - lets the module import without a key
-    _client = None
+    _anthropic = None
+
+try:
+    from openai import OpenAI
+    _openai = OpenAI()  # reads OPENAI_API_KEY from env
+except Exception:  # pragma: no cover
+    _openai = None
 
 
 # --------------------------------------------------------------------------- #
@@ -35,6 +43,7 @@ def _text_and_usage(message: Any) -> tuple[str, dict]:
             parts.append(block.text)
     usage_obj = getattr(message, "usage", None)
     usage = {
+        "provider": "anthropic",
         "input_tokens": getattr(usage_obj, "input_tokens", 0) or 0,
         "output_tokens": getattr(usage_obj, "output_tokens", 0) or 0,
         "web_search_requests": 0,
@@ -72,7 +81,8 @@ def _extract_json(text: str) -> Any:
 
 def _call(model: str, system: str, user: str, temperature: float,
           web_search: bool = False) -> tuple[Any, dict]:
-    if _client is None:
+    """Anthropic call (evaluation provider)."""
+    if _anthropic is None:
         raise RuntimeError(
             "Anthropic client not initialised. Set ANTHROPIC_API_KEY in the env."
         )
@@ -89,8 +99,35 @@ def _call(model: str, system: str, user: str, temperature: float,
             "name": "web_search",
             "max_uses": config.WEB_SEARCH_MAX_USES,
         }]
-    message = _client.messages.create(**kwargs)
+    message = _anthropic.messages.create(**kwargs)
     text, usage = _text_and_usage(message)
+    return _extract_json(text), usage
+
+
+def _call_openai(model: str, system: str, user: str,
+                 temperature: float) -> tuple[Any, dict]:
+    """OpenAI call (judge provider). Forces a JSON object response."""
+    if _openai is None:
+        raise RuntimeError(
+            "OpenAI client not initialised. Set OPENAI_API_KEY in the env."
+        )
+    resp = _openai.chat.completions.create(
+        model=model,
+        temperature=temperature,
+        response_format={"type": "json_object"},  # requires 'json' in the prompt
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    )
+    text = resp.choices[0].message.content or ""
+    u = getattr(resp, "usage", None)
+    usage = {
+        "provider": "openai",
+        "input_tokens": getattr(u, "prompt_tokens", 0) or 0,
+        "output_tokens": getattr(u, "completion_tokens", 0) or 0,
+        "web_search_requests": 0,
+    }
     return _extract_json(text), usage
 
 
@@ -116,11 +153,21 @@ Respond with JSON ONLY, no prose:
 
 
 def gather_evidence_for_category(vendor: str, use_case: str,
-                                 category: str, criteria: list) -> tuple[list[dict], dict]:
+                                 category: str, criteria: list,
+                                 documents: str = "") -> tuple[list[dict], dict]:
     crit_lines = "\n".join(f"  - {c.id}: {c.description}" for c in criteria)
+    doc_block = ""
+    if documents:
+        doc_block = (
+            "\n\nUSER-PROVIDED DOCUMENTS — extract any evidence relevant to the "
+            "criteria above and tier it honestly (independent analyst report = tier 2-3; "
+            "named customer case study = tier 3; the vendor's own collateral = tier 1). "
+            "Cite the document name as the source_title:\n" + documents
+        )
     user = (
         f"Vendor: {vendor}\nBuyer use-case / context: {use_case}\n\n"
-        f"Gather evidence for these criteria in category '{category}':\n{crit_lines}\n\n"
+        f"Gather evidence for these criteria in category '{category}':\n{crit_lines}\n"
+        f"{doc_block}\n\n"
         f"Return the JSON object described in the system prompt."
     )
     payload, usage = _call(config.PRIMARY_MODEL, _EVIDENCE_SYS, user,
@@ -193,6 +240,7 @@ def score_all(vendor: str, use_case: str, criteria: list,
 
 def judge_rescore(vendor: str, use_case: str, criteria: list,
                   gates: list, evidence: list) -> tuple[dict, dict]:
-    """Same evidence, DIFFERENT model — isolates scoring disagreement from search noise."""
+    """Same evidence, DIFFERENT PROVIDER (OpenAI) — isolates scoring disagreement
+    from search noise AND from shared single-provider blind spots."""
     user = _score_user(vendor, use_case, criteria, gates, evidence)
-    return _call(config.JUDGE_MODEL, _scoring_system(), user, config.JUDGE_TEMPERATURE)
+    return _call_openai(config.JUDGE_MODEL, _scoring_system(), user, config.JUDGE_TEMPERATURE)

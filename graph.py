@@ -40,12 +40,14 @@ def gather_evidence(state: AgentState) -> dict:
     t0 = time.time()
     metrics: RunMetrics = state["metrics"]
     vendor, use_case = state["vendor_name"], state["use_case"]
+    documents = state.get("documents", "")
     evidence: list[Evidence] = []
     errors = list(state.get("errors", []))
 
     for category, crits in config.criteria_by_category().items():
         try:
-            items, usage = llm.gather_evidence_for_category(vendor, use_case, category, crits)
+            items, usage = llm.gather_evidence_for_category(
+                vendor, use_case, category, crits, documents)
             metrics.add_usage(usage)
             for it in items:
                 cid = it.get("criterion_id")
@@ -230,7 +232,7 @@ def consistency_check(state: AgentState) -> dict:
         ) if overlap else 0.0,
         divergences=sorted(diffs, key=lambda d: -d["delta"]),
         judge_model=config.JUDGE_MODEL,
-        note=f"{overlap} criteria scored by both models; "
+        note=f"{overlap} criteria scored by both providers; "
              f"{len(diffs)} diverged by >=2 points.",
     )
     metrics.node_seconds["consistency_check"] = round(time.time() - t0, 2)
@@ -259,14 +261,16 @@ def build_graph():
     return g.compile()
 
 
-def run_evaluation(vendor_name: str, use_case: str, gates_cfg=None) -> AgentState:
+def run_evaluation(vendor_name: str, use_case: str, gates_cfg=None,
+                   documents: str = "") -> AgentState:
     metrics = RunMetrics()
     t0 = time.time()
     app = build_graph()
     initial: AgentState = {
         "vendor_name": vendor_name,
         "use_case": use_case,
-        "gates_cfg": gates_cfg or config.DEFAULT_GATES,
+        "documents": documents,
+        "gates_cfg": gates_cfg if gates_cfg is not None else config.DEFAULT_GATES,
         "metrics": metrics,
         "errors": [],
     }
