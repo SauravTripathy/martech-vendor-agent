@@ -41,7 +41,7 @@ TEMPLATE = os.getenv(
 
 
 def _processing_md(elapsed: float) -> str:
-    return f"**Processing time:** {elapsed:0.0f}s"
+    return f"**Processing time:** {elapsed:0.0f}s\n\n*Note: The agent can take around 10 minutes to generate the output*"
 
 
 def _get_value(obj: Any, name: str, default: Any = None) -> Any:
@@ -402,10 +402,11 @@ CSS = """
 
 /* Make input labels inside mt-card larger and bold */
 .mt-card label span,
-.mt-card label p {
+.mt-card label p,
+.mt-card [data-testid="block-info"] {
   font-size: 1.5rem !important;
   font-weight: 800 !important;
-  color: #0fffff !important; 
+  color: #ffffff !important; 
 }
 """
 
