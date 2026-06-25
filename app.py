@@ -37,17 +37,9 @@ def _processing_md(elapsed: float) -> str:
 
 def _metrics_md(state: dict, xlsx: str | None) -> str:
     m = state["metrics"]
-    consistency = state.get("consistency")
-    judge_line = ""
-    if consistency is not None:
-        judge_line = (
-            f" Judge agreement within 1 point: {consistency.agreement_within_1:.0%}; "
-            f"material judge findings: {consistency.material_issues_count}."
-        )
-
     if xlsx:
-        return f"✅ **Done in {m.total_seconds}s. Excel scorecard is ready.**{judge_line}"
-    return f"⚠️ **Done in {m.total_seconds}s, but the Excel file could not be generated.**{judge_line}"
+        return f"✅ **Done in {m.total_seconds}s. Excel scorecard is ready.**"
+    return f"⚠️ **Done in {m.total_seconds}s, but the Excel file could not be generated.**"
 
 
 def _disabled_download(label: str = "Download Excel"):
@@ -96,6 +88,7 @@ def evaluate_vendor(vendor: str, context: str, files):
             holder["state"] = run_evaluation(
                 vendor.strip(),
                 (context or "").strip(),
+                gates_cfg=[],  # gates not exposed in this layout
                 documents=docs,
             )
         except Exception as exc:  # surface to the UI
