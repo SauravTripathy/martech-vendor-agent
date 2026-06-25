@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Secrets — NEVER commit your API key
+.env
+*.env
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Local outputs
+/tmp/
+*_scorecard.xlsx
+!MarTech_Vendor_Scorecard_Single.xlsx
