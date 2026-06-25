@@ -1,0 +1,25 @@
+{
+  "name": "martech-vendor-agent",
+  "version": "1.0.0",
+  "description": "--- title: MarTech Vendor Evaluation Agent emoji: 🧮 colorFrom: blue colorTo: indigo sdk: gradio sdk_version: \"6.19.0\" app_file: app.py pinned: false short_description: LangGraph agent that evaluates MarTech vendors ---",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "python app.py"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SauravTripathy/martech-vendor-agent.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/SauravTripathy/martech-vendor-agent/issues"
+  },
+  "homepage": "https://github.com/SauravTripathy/martech-vendor-agent#readme"
+}

@@ -18,7 +18,6 @@ import time
 
 import gradio as gr
 
-import config
 from graph import run_evaluation
 from scorecard import populate_template
 from documents import extract_text
