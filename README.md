@@ -1,6 +1,5 @@
 ---
 title: MarTech Vendor Evaluation Agent
-emoji:
 colorFrom: blue
 colorTo: indigo
 sdk: gradio
