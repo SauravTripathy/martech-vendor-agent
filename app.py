@@ -39,6 +39,7 @@ TEMPLATE = os.getenv(
 # Output rendering
 # --------------------------------------------------------------------------- #
 
+
 def _processing_md(elapsed: float) -> str:
     return f"**Processing time:** {elapsed:0.0f}s"
 
@@ -173,10 +174,7 @@ def _export(state: dict, vendor: str) -> str | None:
         return None
 
     safe_vendor = (
-        vendor.strip()
-        .replace(" ", "_")
-        .replace("/", "-")
-        .replace("\\", "-")
+        vendor.strip().replace(" ", "_").replace("/", "-").replace("\\", "-")
         or "vendor"
     )
     out = os.path.join(tempfile.mkdtemp(), f"{safe_vendor}_scorecard.xlsx")
@@ -193,13 +191,16 @@ def _export(state: dict, vendor: str) -> str | None:
     if os.path.exists(out):
         return out
 
-    state.setdefault("errors", []).append("[xlsx] scorecard export did not return a file path")
+    state.setdefault("errors", []).append(
+        "[xlsx] scorecard export did not return a file path"
+    )
     return None
 
 
 # --------------------------------------------------------------------------- #
 # Handler — generator so processing time updates while the run executes
 # --------------------------------------------------------------------------- #
+
 
 def evaluate_vendor(vendor: str, context: str, files):
     if not (vendor or "").strip():
@@ -297,8 +298,8 @@ CSS = """
 }
 
 #main-title h1 {
-  color: #06142f !important;
-  font-size: clamp(2.8rem, 6vw, 5.2rem) !important;
+  color: #ffffff !important;
+  font-size: clamp(2.0rem, 4.5vw, 3.5rem) !important; /
   line-height: 1.02 !important;
   letter-spacing: -0.05em !important;
   font-weight: 900 !important;
@@ -398,56 +399,75 @@ CSS = """
   background: #15803d !important;
   border-color: #15803d !important;
 }
+
+/* Make input labels inside mt-card larger and bold */
+.mt-card label span,
+.mt-card label p {
+  font-size: 1.5rem !important;
+  font-weight: 800 !important;
+  color: #0fffff !important; 
+}
 """
 
 
 def build_ui():
     with gr.Blocks(title="MarTech Vendor Evaluation Agent", css=CSS) as demo:
-        gr.HTML(
-            "<div id='main-title'>"
-            "<h1>MarTech Vendor Evaluation Agent</h1>"
-            "</div>"
-        )
+        gr.HTML("<div id='main-title'><h1>MarTech Vendor Evaluation Agent</h1></div>")
 
         with gr.Group(elem_classes="mt-shell"):
             with gr.Row(equal_height=True, elem_classes="mt-input-row"):
                 with gr.Column(scale=1, min_width=240, elem_classes="mt-card"):
                     vendor = gr.Textbox(
-                        label="Vendor name",
+                        label="Enter Martech vendor name",
                         placeholder="e.g. Braze",
-                        lines=1,
+                        lines=6,
                     )
 
                 with gr.Column(scale=1, min_width=280, elem_classes="mt-card"):
                     context = gr.Textbox(
-                        label="Context",
+                        label="Enter any additional context",
                         lines=6,
-                        placeholder=(
-                            "e.g. UK retail bank; real-time orchestration on Snowflake; "
-                            "data must stay in the EU; SOC 2 required."
-                        ),
+                        placeholder=("e.g. data must stay in the EU, SOC 2 required"),
                     )
 
                 with gr.Column(scale=1, min_width=260, elem_classes="mt-card"):
                     files = gr.File(
-                        label="Upload reports",
+                        label="Upload any existing reports on the MarTech vendor",
                         file_count="multiple",
                         file_types=[".pdf", ".docx", ".txt", ".md", ".csv"],
                         type="filepath",
                     )
 
+        # Updated Actions Section: Centered, narrowed, and reordered
         with gr.Column(elem_classes="mt-actions"):
-            run_btn = gr.Button("Run Agent", variant="primary", elem_id="run-agent-btn")
-            status_md = gr.Markdown("", elem_classes="mt-status")
-            metrics_md = gr.Markdown("", elem_classes="mt-metrics", visible=False)
-            download_btn = gr.DownloadButton(
-                "Download Excel",
-                value=None,
-                elem_id="download-excel-btn",
-                visible=False,
-                interactive=False,
-            )
+            with gr.Row():
+                # Left spacer
+                gr.Column(scale=1, min_width=0)
 
+                # Center column holding the actions
+                with gr.Column(scale=2, min_width=300):
+                    run_btn = gr.Button(
+                        "Run Agent", variant="primary", elem_id="run-agent-btn"
+                    )
+                    status_md = gr.Markdown("", elem_classes="mt-status")
+
+                    # Moved DownloadButton above metrics_md
+                    download_btn = gr.DownloadButton(
+                        "Download Excel",
+                        value=None,
+                        elem_id="download-excel-btn",
+                        visible=False,
+                        interactive=False,
+                    )
+
+                    metrics_md = gr.Markdown(
+                        "", elem_classes="mt-metrics", visible=False
+                    )
+
+                # Right spacer
+                gr.Column(scale=1, min_width=0)
+
+        # The outputs array order remains unchanged to match the generator yields
         run_btn.click(
             evaluate_vendor,
             inputs=[vendor, context, files],
