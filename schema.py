@@ -1,4 +1,5 @@
-"""Typed structures for evidence, scores, gates, and the LangGraph state."""
+"""Typed structures for evidence, scores, judge review, and graph state."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -9,7 +10,7 @@ from typing import Optional, TypedDict
 class Evidence:
     criterion_id: str
     claim: str
-    tier: int               # 1..4, see config.EVIDENCE_TIERS
+    tier: int  # 1..4, see config.EVIDENCE_TIERS
     source_title: str
     source_url: str
     snippet: str = ""
@@ -30,13 +31,13 @@ class CriterionScore:
     category: str
     description: str
     weight: float
-    score: Optional[int]        # None == N/A / not evaluable -> BLANK, never 0
+    score: Optional[int]  # None == N/A / not evaluable -> BLANK, never 0
     evidence_tier: Optional[int]
-    confidence: float           # 0..1
+    confidence: float  # 0..1
     rationale: str
     sources: list[str] = field(default_factory=list)
-    is_gap: bool = False        # no usable evidence found
-    capped: bool = False        # score was limited by evidence tier
+    is_gap: bool = False  # no usable evidence found
+    capped: bool = False  # score was limited by evidence tier
 
     @property
     def weighted(self) -> float:
@@ -44,20 +45,15 @@ class CriterionScore:
 
 
 @dataclass
-class GateResult:
-    gate_id: str
-    criterion_id: str
-    label: str
-    passed: Optional[bool]      # None == undetermined (treated as fail-safe flag)
-    rationale: str
-    evidence_tier: Optional[int] = None
-
-
-@dataclass
 class ConsistencyReport:
-    agreement_within_1: float        # share of overlapping criteria within 1 point
+    agreement_within_1: float  # share of overlapping criteria within 1 point
     mean_abs_diff: float
-    divergences: list[dict] = field(default_factory=list)  # criterion-level deltas
+    divergences: list[dict] = field(default_factory=list)
+    judge_findings: list[dict] = field(default_factory=list)
+    recommended_adjustments: list[dict] = field(default_factory=list)
+    missing_evidence: list[dict] = field(default_factory=list)
+    support_issues: list[dict] = field(default_factory=list)
+    material_issues_count: int = 0
     judge_model: str = ""
     note: str = ""
 
@@ -70,30 +66,48 @@ class RunMetrics:
     llm_calls: int = 0
     node_seconds: dict = field(default_factory=dict)
     total_seconds: float = 0.0
+    by_provider: dict = field(default_factory=dict)
 
     def add_usage(self, usage: dict) -> None:
-        self.input_tokens += usage.get("input_tokens", 0)
-        self.output_tokens += usage.get("output_tokens", 0)
-        self.web_search_requests += usage.get("web_search_requests", 0)
+        usage = usage or {}
+        provider = usage.get("provider", "unknown")
+        input_tokens = usage.get("input_tokens", 0) or 0
+        output_tokens = usage.get("output_tokens", 0) or 0
+        searches = usage.get("web_search_requests", 0) or 0
+
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+        self.web_search_requests += searches
         self.llm_calls += 1
+
+        bucket = self.by_provider.setdefault(
+            provider,
+            {"in": 0, "out": 0, "searches": 0, "calls": 0},
+        )
+        bucket["in"] += input_tokens
+        bucket["out"] += output_tokens
+        bucket["searches"] += searches
+        bucket["calls"] += 1
 
 
 class AgentState(TypedDict, total=False):
     # inputs
     vendor_name: str
     use_case: str
-    gates_cfg: list           # list[config.Gate]
+    documents: str
+
     # node 1
-    evidence: list            # list[Evidence]
+    evidence: list  # list[Evidence]
+
     # node 2
-    gate_results: list        # list[GateResult]
-    eliminated: bool
-    elimination_reasons: list
-    scores: list              # list[CriterionScore]
+    scores: list  # list[CriterionScore]
     weighted_total: float
     normalized: float
+
     # node 3
-    consistency: object       # ConsistencyReport | None
+    judge_scores: list  # list[CriterionScore]
+    consistency: object  # ConsistencyReport | None
+
     # cross-cutting
-    metrics: object           # RunMetrics
+    metrics: object  # RunMetrics
     errors: list
